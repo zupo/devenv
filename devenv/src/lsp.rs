@@ -16,17 +16,17 @@ pub struct Backend {
 }
 
 impl Backend {
-    fn parse_line(&self, line: &str) -> (Vec<String>, String) {
+    fn get_path(&self, line: &str) -> Vec<String> {
         let parts: Vec<&str> = line.split('.').collect();
-        let partial_key = parts.last().unwrap_or(&"").to_string();
+
         let path = parts[..parts.len() - 1]
             .iter()
-            .map(|&s| s.to_string())
+            .map(|&s| s.trim().to_string())
             .collect();
-        (path, partial_key)
+        return path;
     }
 
-    fn search_json(&self, path: &[String], partial_key: &str) -> Vec<String> {
+    fn search_json(&self, path: &[String], partial_key: &str) -> Vec<(String, Option<String>)> {
         let mut current = &self.completion_json;
         for key in path {
             if let Some(value) = current.get(key) {
@@ -38,9 +38,18 @@ impl Backend {
 
         match current {
             Value::Object(map) => map
-                .keys()
-                .filter(|k| k.starts_with(partial_key))
-                .cloned()
+                .iter()
+                .filter(|(k, _)| k.starts_with(partial_key))
+                .map(|(k, v)| {
+                    let description = match v {
+                        Value::Object(obj) => obj
+                            .get("description")
+                            .and_then(|d| d.as_str())
+                            .map(String::from),
+                        _ => None,
+                    };
+                    (k.clone(), description)
+                })
                 .collect(),
             _ => Vec::new(),
         }
@@ -190,17 +199,24 @@ impl LanguageServer for Backend {
         debug!("Current word {:?}", current_word);
 
         // Parse the line to get the current path and partial key
-        let (path, partial_key) = self.parse_line(current_word);
+        let json_path = self.get_path(line_until_cursor);
+
+        debug!("Path: {:?}, Partial key: {:?}", json_path, current_word);
 
         // Search for completions in the JSON
-        let completions = self.search_json(&path, &partial_key);
+        let completions = self.search_json(&json_path, &current_word);
 
-        info!("Probable completion items {:?}", completions);
+        info!(
+            "Probable completion items {:?} and description",
+            completions
+        );
 
         // covert completions to CompletionItems format
-        let completion_items: Vec<_> = completions
-            .iter()
-            .map(|item| CompletionItem::new_simple(item.to_string(), "".to_string()))
+        let completion_items: Vec<CompletionItem> = completions
+            .into_iter()
+            .map(|(item, description)| {
+                CompletionItem::new_simple(item, description.unwrap_or_default())
+            })
             .collect();
 
         Ok(Some(CompletionResponse::List(CompletionList {

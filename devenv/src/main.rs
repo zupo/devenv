@@ -6,7 +6,7 @@ use devenv::{
 use miette::Result;
 use std::fs::File;
 use std::io::BufWriter;
-use tracing::debug;
+use tracing::info;
 use tracing::level_filters::LevelFilter;
 
 #[tokio::main]
@@ -50,11 +50,7 @@ async fn main() -> Result<()> {
     let json: serde_json::Value =
         serde_json::from_reader(file).expect("file should be proper JSON");
 
-    // debug!("trimmed_json {:?}", trimmed_json);
-
     let mut flatten_json = utils::flatten(json);
-
-    // debug!("flatten_json: {}", serde_json::to_string_pretty(&flatten_json).unwrap());
 
     let filter_keys = vec![
         String::from("declarations"),
@@ -64,6 +60,11 @@ async fn main() -> Result<()> {
 
     let filter_keys_refs: Vec<&str> = filter_keys.iter().map(|s| s.as_str()).collect();
     let completion_json = utils::filter_json(&mut flatten_json, filter_keys_refs);
+
+    info!(
+        "Completion JSON: {:?}",
+        completion_json["android"]["enable"]
+    );
 
     let mut config = config::Config::load()?;
     for input in cli.global_options.override_input.chunks_exact(2) {
