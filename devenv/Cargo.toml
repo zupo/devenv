@@ -39,6 +39,10 @@ tracing.workspace = true
 which.workspace = true
 whoami.workspace = true
 xdg.workspace = true
+tower-lsp.workspace = true
+tracing-subscriber.workspace = true
+tracing-appender.workspace = true
+dashmap.workspace = true
 
 [dev-dependencies]
 pretty_assertions = { version = "1.4.0", features = ["unstable"] }

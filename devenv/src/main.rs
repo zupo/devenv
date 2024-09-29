@@ -4,6 +4,10 @@ use devenv::{
     config, log, Devenv,
 };
 use miette::Result;
+use std::fs::File;
+use std::io::BufWriter;
+use tracing::debug;
+use tracing::level_filters::LevelFilter;
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -27,6 +31,39 @@ async fn main() -> Result<()> {
     };
 
     let logger = log::Logger::new(level);
+
+    let file =
+        std::fs::File::create("/tmp/devenv-lsp.log").expect("Couldn't create devenv-lsp.log file");
+    let file = BufWriter::new(file);
+    let (non_blocking, _guard) = tracing_appender::non_blocking(file);
+
+    let subscriber = tracing_subscriber::fmt()
+        .with_max_level(LevelFilter::DEBUG)
+        .with_ansi(false)
+        .with_writer(non_blocking)
+        .finish();
+
+    let _ = tracing::subscriber::set_global_default(subscriber);
+
+    let file = File::open("/home/k3ys/tmp/option.json").unwrap();
+
+    let json: serde_json::Value =
+        serde_json::from_reader(file).expect("file should be proper JSON");
+
+    // debug!("trimmed_json {:?}", trimmed_json);
+
+    let mut flatten_json = utils::flatten(json);
+
+    // debug!("flatten_json: {}", serde_json::to_string_pretty(&flatten_json).unwrap());
+
+    let filter_keys = vec![
+        String::from("declarations"),
+        String::from("loc"),
+        String::from("readOnly"),
+    ];
+
+    let filter_keys_refs: Vec<&str> = filter_keys.iter().map(|s| s.as_str()).collect();
+    let completion_json = utils::filter_json(&mut flatten_json, filter_keys_refs);
 
     let mut config = config::Config::load()?;
     for input in cli.global_options.override_input.chunks_exact(2) {
@@ -125,6 +162,7 @@ async fn main() -> Result<()> {
         Commands::Gc {} => devenv.gc(),
         Commands::Info {} => devenv.info().await,
         Commands::Repl {} => devenv.repl(),
+        Commands::Lsp {} => devenv.lsp(&completion_json).await,
         Commands::Build { attributes } => devenv.build(&attributes).await,
         Commands::Update { name } => devenv.update(&name).await,
         Commands::Up { process, detach } => devenv.up(process.as_deref(), &detach, &detach).await,

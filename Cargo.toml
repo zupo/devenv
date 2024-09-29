@@ -56,6 +56,12 @@ tokio = { version = "1.39.3", features = [
 ] }
 schemars = "0.8.16"
 
+# LSP dependencies
+tower-lsp = "0.20.0"
+tracing-subscriber = "0.3.18"
+tracing-appender = "0.2.3"
+dashmap = "6.1.0"
+
 # Always build optimized sqlx-macro to speed up query checks
 [profile.dev.package.sqlx-macros]
 opt-level = 3
