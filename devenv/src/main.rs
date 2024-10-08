@@ -1,12 +1,10 @@
 use clap::crate_version;
 use devenv::{
     cli::{Cli, Commands, ContainerCommand, InputsCommand, ProcessesCommand, TasksCommand},
-    config, log, Devenv,
+    config, log, Devenv
 };
 use miette::Result;
-use std::fs::File;
 use std::io::BufWriter;
-use tracing::info;
 use tracing::level_filters::LevelFilter;
 
 #[tokio::main]
@@ -44,27 +42,6 @@ async fn main() -> Result<()> {
         .finish();
 
     let _ = tracing::subscriber::set_global_default(subscriber);
-
-    let file = File::open("/home/k3ys/tmp/option.json").unwrap();
-
-    let json: serde_json::Value =
-        serde_json::from_reader(file).expect("file should be proper JSON");
-
-    let mut flatten_json = utils::flatten(json);
-
-    let filter_keys = vec![
-        String::from("declarations"),
-        String::from("loc"),
-        String::from("readOnly"),
-    ];
-
-    let filter_keys_refs: Vec<&str> = filter_keys.iter().map(|s| s.as_str()).collect();
-    let completion_json = utils::filter_json(&mut flatten_json, filter_keys_refs);
-
-    info!(
-        "Completion JSON: {:?}",
-        completion_json["android"]["enable"]
-    );
 
     let mut config = config::Config::load()?;
     for input in cli.global_options.override_input.chunks_exact(2) {
@@ -163,7 +140,7 @@ async fn main() -> Result<()> {
         Commands::Gc {} => devenv.gc(),
         Commands::Info {} => devenv.info().await,
         Commands::Repl {} => devenv.repl(),
-        Commands::Lsp {} => devenv.lsp(&completion_json).await,
+        Commands::Lsp {} => devenv.lsp().await,
         Commands::Build { attributes } => devenv.build(&attributes).await,
         Commands::Update { name } => devenv.update(&name).await,
         Commands::Up { process, detach } => devenv.up(process.as_deref(), &detach, &detach).await,
