@@ -594,6 +594,7 @@ dependencies = [
 name = "devenv"
 version = "1.3.0"
 dependencies = [
+ "cc",
  "clap",
  "cli-table",
  "console",
@@ -626,6 +627,8 @@ dependencies = [
  "tracing",
  "tracing-appender",
  "tracing-subscriber",
+ "tree-sitter",
+ "tree-sitter-nix",
  "which",
  "whoami",
  "xdg",
@@ -3015,6 +3018,26 @@ dependencies = [
  "tracing",
  "tracing-core",
  "tracing-log",
+]
+
+[[package]]
+name = "tree-sitter"
+version = "0.20.10"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e747b1f9b7b931ed39a548c1fae149101497de3c1fc8d9e18c62c1a66c683d3d"
+dependencies = [
+ "cc",
+ "regex",
+]
+
+[[package]]
+name = "tree-sitter-nix"
+version = "0.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ae8c93b7dd2afcd9667daae048135be9ee268e9e3900f4d7d0556a63ec5336b1"
+dependencies = [
+ "cc",
+ "tree-sitter",
 ]
 
 [[package]]

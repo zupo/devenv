@@ -413,9 +413,9 @@ impl Devenv {
         let mut flatten_json = utils::flatten(options_json);
 
         let filter_keys = vec![
-                String::from("declarations"),
-                String::from("loc"),
-                String::from("readOnly"),
+            String::from("declarations"),
+            String::from("loc"),
+            String::from("readOnly"),
         ];
 
         let filter_keys_refs: Vec<&str> = filter_keys.iter().map(|s| s.as_str()).collect();
@@ -426,6 +426,8 @@ impl Devenv {
             client,
             document_map: DashMap::new(),
             completion_json: completion_json.clone(),
+            current_scope: Default::default(),
+            last_cursor_position: DashMap::new(),
         });
 
         Server::new(stdin, stdout, socket).serve(service).await;

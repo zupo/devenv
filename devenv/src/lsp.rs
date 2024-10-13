@@ -6,16 +6,67 @@ use tower_lsp::jsonrpc::Result;
 use tower_lsp::lsp_types::*;
 use tower_lsp::{Client, LanguageServer};
 use tracing::{debug, info};
+use tree_sitter::{Node, Parser, Point};
+use tree_sitter_nix::language;
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct Backend {
     pub client: Client,
     // document store in memory
     pub document_map: DashMap<String, String>,
     pub completion_json: Value,
+    pub last_cursor_position: DashMap<String, Position>,
+    pub current_scope: DashMap<String, Vec<String>>,
 }
 
 impl Backend {
+    fn get_scope(&self, root_node: Node, cursor_position: Point, source: &str) -> Vec<String> {
+        let mut attrpaths = Vec::new();
+
+        // Find the node at the cursor position
+        if let Some(node) = root_node.descendant_for_point_range(cursor_position, cursor_position) {
+            let mut current_node = node;
+
+            loop {
+                // If we find an attrpath, add it to our list
+                if current_node.kind() == "attrpath" {
+                    if let Ok(text) = current_node.utf8_text(source.as_bytes()) {
+                        attrpaths.push(text.to_string());
+                    }
+                }
+
+                // Move to the previous sibling or parent
+                if let Some(prev_sibling) = current_node.prev_sibling() {
+                    current_node = prev_sibling;
+                } else if let Some(parent) = current_node.parent() {
+                    current_node = parent;
+                } else {
+                    break; // We've reached the root, so we're done
+                }
+            }
+        }
+
+        // Reverse the list since we've been traversing backwards
+        attrpaths.reverse();
+        attrpaths
+    }
+
+    fn setup_parser() -> Parser {
+        let mut parser = Parser::new();
+        let nix_grammer = language();
+        parser
+            .set_language(nix_grammer)
+            .expect("Error loading Nix grammar");
+        parser
+    }
+
+    fn parse_document(&self, content: &str) -> tree_sitter::Tree {
+        let mut parser = Self::setup_parser();
+        parser
+            .parse(content, None)
+            .expect("Failed to parse document")
+    }
+
     fn get_path(&self, line: &str) -> Vec<String> {
         let parts: Vec<&str> = line.split('.').collect();
 
@@ -140,10 +191,34 @@ impl LanguageServer for Backend {
 
     async fn did_change(&self, params: DidChangeTextDocumentParams) {
         // info!("textDocument/DidChange, params: {:?}", params);
-        self.document_map.insert(
-            params.text_document.uri.to_string(),
-            params.content_changes[0].text.clone(),
-        );
+        let uri = params.text_document.uri.to_string();
+
+        // Get the last known cursor position for this document
+        let position = self
+            .last_cursor_position
+            .get(&uri)
+            .map(|pos| *pos)
+            .unwrap_or_default();
+
+        let line = position.line as usize;
+        let character = position.character as usize;
+        let file_content = params.content_changes[0].text.clone();
+        self.document_map.insert(uri.clone(), file_content.clone());
+
+        let mut parser = Parser::new();
+        let nix_grammer = language();
+        parser
+            .set_language(nix_grammer)
+            .expect("Error loading Nix grammar");
+
+        let tree = parser
+            .parse(&file_content, None)
+            .expect("Failed to parse document");
+
+        let root_node = tree.root_node();
+        let point: Point = Point::new(line as usize, character as usize);
+        let scope_path = self.get_scope(root_node, point, &file_content);
+        self.current_scope.insert(uri, scope_path);
 
         self.client
             .log_message(MessageType::INFO, "file changed!")
@@ -166,7 +241,7 @@ impl LanguageServer for Backend {
 
     async fn completion(&self, params: CompletionParams) -> Result<Option<CompletionResponse>> {
         info!("textDocument/Completion");
-        let uri = params.text_document_position.text_document.uri;
+        let uri = params.text_document_position.text_document.uri.to_string();
 
         let file_content = match self.document_map.get(uri.as_str()) {
             Some(content) => {
@@ -186,7 +261,16 @@ impl LanguageServer for Backend {
         let line_content = file_content.lines().nth(line).unwrap_or_default();
         let line_until_cursor = &line_content[..character];
 
-        // handling regex for getting the current word
+        self.last_cursor_position.insert(uri.clone(), position);
+
+        // let tree = self.parse_document(&file_content);
+
+        // let root_node = tree.root_node();
+
+        // let point: Point = Point::new(line as usize, character as usize);
+
+        // let scope_path = self.get_scope(root_node, point, &file_content);
+
         let re = Regex::new(r".*\W(.*)").unwrap(); // Define the regex pattern
         let current_word = re
             .captures(line_until_cursor)
@@ -194,24 +278,27 @@ impl LanguageServer for Backend {
             .map(|m| m.as_str())
             .unwrap_or("");
 
-        debug!("Current line content {:?}", line_content);
+        debug!("Current scope {:?}", self.current_scope);
         debug!("Line until cursor: {:?}", line_until_cursor);
-        debug!("Current word {:?}", current_word);
 
-        // Parse the line to get the current path and partial key
-        let json_path = self.get_path(line_until_cursor);
+        let dot_path = self.get_path(line_until_cursor);
+        let current_scope = self
+            .current_scope
+            .get(uri.as_str())
+            .map(|ref_wrapper| ref_wrapper.clone()) // Clone the inner Vec<String>
+            .unwrap_or_else(Vec::new); // If there's no scope, use an empty Vec
 
-        debug!("Path: {:?}, Partial key: {:?}", json_path, current_word);
+        let search_path = [current_scope, dot_path].concat();
 
-        // Search for completions in the JSON
-        let completions = self.search_json(&json_path, &current_word);
+        debug!("Path: {:?}, Partial key: {:?}", search_path, current_word);
+
+        let completions = self.search_json(&search_path, &current_word);
 
         info!(
             "Probable completion items {:?} and description",
             completions
         );
 
-        // covert completions to CompletionItems format
         let completion_items: Vec<CompletionItem> = completions
             .into_iter()
             .map(|(item, description)| {

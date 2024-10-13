@@ -43,7 +43,12 @@ tower-lsp.workspace = true
 tracing-subscriber.workspace = true
 tracing-appender.workspace = true
 dashmap.workspace = true
+tree-sitter.workspace = true
+tree-sitter-nix.workspace = true
 
 [dev-dependencies]
 pretty_assertions = { version = "1.4.0", features = ["unstable"] }
 test-log = { version = "0.2.16", features = ["trace"] }
+
+[build-dependencies]
+cc = "*"
