@@ -12,7 +12,6 @@ use tree_sitter_nix::language;
 #[derive(Clone, Debug)]
 pub struct Backend {
     pub client: Client,
-    // document store in memory
     pub document_map: DashMap<String, String>,
     pub completion_json: Value,
     pub last_cursor_position: DashMap<String, Position>,
@@ -23,48 +22,28 @@ impl Backend {
     fn get_scope(&self, root_node: Node, cursor_position: Point, source: &str) -> Vec<String> {
         let mut attrpaths = Vec::new();
 
-        // Find the node at the cursor position
         if let Some(node) = root_node.descendant_for_point_range(cursor_position, cursor_position) {
             let mut current_node = node;
 
             loop {
-                // If we find an attrpath, add it to our list
                 if current_node.kind() == "attrpath" {
                     if let Ok(text) = current_node.utf8_text(source.as_bytes()) {
                         attrpaths.push(text.to_string());
                     }
                 }
 
-                // Move to the previous sibling or parent
                 if let Some(prev_sibling) = current_node.prev_sibling() {
                     current_node = prev_sibling;
                 } else if let Some(parent) = current_node.parent() {
                     current_node = parent;
                 } else {
-                    break; // We've reached the root, so we're done
+                    break;
                 }
             }
         }
 
-        // Reverse the list since we've been traversing backwards
         attrpaths.reverse();
         attrpaths
-    }
-
-    fn setup_parser() -> Parser {
-        let mut parser = Parser::new();
-        let nix_grammer = language();
-        parser
-            .set_language(nix_grammer)
-            .expect("Error loading Nix grammar");
-        parser
-    }
-
-    fn parse_document(&self, content: &str) -> tree_sitter::Tree {
-        let mut parser = Self::setup_parser();
-        parser
-            .parse(content, None)
-            .expect("Failed to parse document")
     }
 
     fn get_path(&self, line: &str) -> Vec<String> {
