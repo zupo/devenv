@@ -1,49 +1,124 @@
 use dashmap::DashMap;
 use regex::Regex;
 use serde_json::Value;
-use std::ops::Deref;
 use tower_lsp::jsonrpc::Result;
 use tower_lsp::lsp_types::*;
 use tower_lsp::{Client, LanguageServer};
 use tracing::{debug, info};
-use tree_sitter::{Node, Parser, Point};
+use tree_sitter::{Node, Parser, Point, Tree, TreeCursor};
 use tree_sitter_nix::language;
 
 #[derive(Clone, Debug)]
 pub struct Backend {
     pub client: Client,
-    pub document_map: DashMap<String, String>,
+    // pub document_map: DashMap<String, String>,
+    pub document_map: DashMap<String, (String, Tree)>,
     pub completion_json: Value,
-    pub last_cursor_position: DashMap<String, Position>,
-    pub current_scope: DashMap<String, Vec<String>>,
 }
 
 impl Backend {
+    fn get_completion_items(&self, uri: &str, position: Position) -> Vec<CompletionItem> {
+        let (content, tree) = self
+            .document_map
+            .get(uri)
+            .expect("Document not found")
+            .clone();
+        let root_node = tree.root_node();
+        let point = Point::new(position.line as usize, position.character as usize);
+
+        let scope_path = self.get_scope(root_node, point, &content);
+        let line_content = content
+            .lines()
+            .nth(position.line as usize)
+            .unwrap_or_default();
+        let line_until_cursor = &line_content[..position.character as usize];
+        let dot_path = self.get_path(line_until_cursor);
+
+        let re = Regex::new(r".*\W(.*)").unwrap();
+        let current_word = re
+            .captures(line_until_cursor)
+            .and_then(|caps| caps.get(1))
+            .map(|m| m.as_str())
+            .unwrap_or("");
+
+        let search_path = [scope_path.clone(), dot_path].concat();
+        let completions = self.search_json(&search_path, current_word);
+
+        completions
+            .into_iter()
+            .map(|(item, description)| {
+                CompletionItem::new_simple(item, description.unwrap_or_default())
+            })
+            .collect()
+    }
+
+    fn parse_document(&self, content: &str) -> Tree {
+        let mut parser = Parser::new();
+        let nix_grammar = language();
+        parser
+            .set_language(nix_grammar)
+            .expect("Error loading Nix grammar");
+        parser
+            .parse(content, None)
+            .expect("Failed to parse document")
+    }
+
+    fn update_document(&self, uri: &str, content: String) {
+        let tree = self.parse_document(&content);
+        self.document_map.insert(uri.to_string(), (content, tree));
+    }
+
     fn get_scope(&self, root_node: Node, cursor_position: Point, source: &str) -> Vec<String> {
-        let mut attrpaths = Vec::new();
+        debug!("Getting scope for cursor position: {:?}", cursor_position);
+        debug!("Source code is: {:?}", source);
+        let mut scope = Vec::new();
 
         if let Some(node) = root_node.descendant_for_point_range(cursor_position, cursor_position) {
-            let mut current_node = node;
-
-            loop {
-                if current_node.kind() == "attrpath" {
-                    if let Ok(text) = current_node.utf8_text(source.as_bytes()) {
-                        attrpaths.push(text.to_string());
-                    }
-                }
-
-                if let Some(prev_sibling) = current_node.prev_sibling() {
-                    current_node = prev_sibling;
-                } else if let Some(parent) = current_node.parent() {
-                    current_node = parent;
-                } else {
-                    break;
-                }
-            }
+            let mut cursor = node.walk();
+            self.traverse_up(&mut cursor, &mut scope, source);
         }
 
-        attrpaths.reverse();
-        attrpaths
+        scope.reverse();
+        debug!("Final scope: {:?}", scope);
+        scope
+    }
+
+    fn traverse_up(&self, cursor: &mut TreeCursor, scope: &mut Vec<String>, source: &str) {
+        loop {
+            let node = cursor.node();
+            debug!(
+                "Current node kind: {}, text: {:?}",
+                node.kind(),
+                node.utf8_text(source.as_bytes())
+            );
+
+            match node.kind() {
+                "attrpath" => {
+                    if let Ok(text) = node.utf8_text(source.as_bytes()) {
+                        let attrs: Vec<String> = text.split('.').map(String::from).collect();
+                        scope.extend(attrs);
+                    }
+                }
+                "binding" => {
+                    if let Some(attrpath) = node.child_by_field_name("attrpath") {
+                        if let Ok(text) = attrpath.utf8_text(source.as_bytes()) {
+                            let attrs: Vec<String> = text.split('.').map(String::from).collect();
+                            scope.extend(attrs);
+                        }
+                    }
+                }
+                "attrset_expression" => {
+                    // We've reached an attribute set, continue traversing up
+                }
+                _ => {
+                    // For other node types, we don't add to the scope
+                }
+            }
+
+            if !cursor.goto_parent() {
+                break;
+            }
+        }
     }
 
     fn get_path(&self, line: &str) -> Vec<String> {
@@ -97,13 +172,13 @@ impl LanguageServer for Backend {
                 )),
                 completion_provider: Some(CompletionOptions {
                     resolve_provider: Some(false),
-                    trigger_characters: Some(vec![".".to_string()]),
+                    trigger_characters: Some(vec![".".to_string(), "\n".to_string()]),
                     work_done_progress_options: Default::default(),
                     all_commit_characters: None,
                     ..Default::default()
                 }),
                 execute_command_provider: Some(ExecuteCommandOptions {
-                    commands: vec!["dummy.do_something".to_string()],
+                    commands: vec![],
                     work_done_progress_options: Default::default(),
                 }),
                 workspace: Some(WorkspaceServerCapabilities {
@@ -161,44 +236,22 @@ impl LanguageServer for Backend {
         Ok(None)
     }
 
-    async fn did_open(&self, _: DidOpenTextDocumentParams) {
+    async fn did_open(&self, params: DidOpenTextDocumentParams) {
         self.client
             .log_message(MessageType::INFO, "file opened!")
             .await;
-        info!("textDocument/DidOpen");
+        let uri = params.text_document.uri.to_string();
+        let content = params.text_document.text;
+        self.update_document(&uri, content);
+        self.client
+            .log_message(MessageType::INFO, "file opened!")
+            .await;
     }
 
     async fn did_change(&self, params: DidChangeTextDocumentParams) {
-        // info!("textDocument/DidChange, params: {:?}", params);
         let uri = params.text_document.uri.to_string();
-
-        // Get the last known cursor position for this document
-        let position = self
-            .last_cursor_position
-            .get(&uri)
-            .map(|pos| *pos)
-            .unwrap_or_default();
-
-        let line = position.line as usize;
-        let character = position.character as usize;
-        let file_content = params.content_changes[0].text.clone();
-        self.document_map.insert(uri.clone(), file_content.clone());
-
-        let mut parser = Parser::new();
-        let nix_grammer = language();
-        parser
-            .set_language(nix_grammer)
-            .expect("Error loading Nix grammar");
-
-        let tree = parser
-            .parse(&file_content, None)
-            .expect("Failed to parse document");
-
-        let root_node = tree.root_node();
-        let point: Point = Point::new(line as usize, character as usize);
-        let scope_path = self.get_scope(root_node, point, &file_content);
-        self.current_scope.insert(uri, scope_path);
-
+        let content = params.content_changes[0].text.clone();
+        self.update_document(&uri, content);
         self.client
             .log_message(MessageType::INFO, "file changed!")
             .await;
@@ -219,71 +272,10 @@ impl LanguageServer for Backend {
     }
 
     async fn completion(&self, params: CompletionParams) -> Result<Option<CompletionResponse>> {
-        info!("textDocument/Completion");
         let uri = params.text_document_position.text_document.uri.to_string();
-
-        let file_content = match self.document_map.get(uri.as_str()) {
-            Some(content) => {
-                debug!("Text document content via DashMap: {:?}", content.deref());
-                content.clone()
-            }
-            None => {
-                info!("No content found for the given URI");
-                String::new()
-            }
-        };
-
         let position = params.text_document_position.position;
-        let line = position.line as usize;
-        let character = position.character as usize;
 
-        let line_content = file_content.lines().nth(line).unwrap_or_default();
-        let line_until_cursor = &line_content[..character];
-
-        self.last_cursor_position.insert(uri.clone(), position);
-
-        // let tree = self.parse_document(&file_content);
-
-        // let root_node = tree.root_node();
-
-        // let point: Point = Point::new(line as usize, character as usize);
-
-        // let scope_path = self.get_scope(root_node, point, &file_content);
-
-        let re = Regex::new(r".*\W(.*)").unwrap(); // Define the regex pattern
-        let current_word = re
-            .captures(line_until_cursor)
-            .and_then(|caps| caps.get(1))
-            .map(|m| m.as_str())
-            .unwrap_or("");
-
-        debug!("Current scope {:?}", self.current_scope);
-        debug!("Line until cursor: {:?}", line_until_cursor);
-
-        let dot_path = self.get_path(line_until_cursor);
-        let current_scope = self
-            .current_scope
-            .get(uri.as_str())
-            .map(|ref_wrapper| ref_wrapper.clone()) // Clone the inner Vec<String>
-            .unwrap_or_else(Vec::new); // If there's no scope, use an empty Vec
-
-        let search_path = [current_scope, dot_path].concat();
-
-        debug!("Path: {:?}, Partial key: {:?}", search_path, current_word);
-
-        let completions = self.search_json(&search_path, &current_word);
-
-        info!(
-            "Probable completion items {:?} and description",
-            completions
-        );
-
-        let completion_items: Vec<CompletionItem> = completions
-            .into_iter()
-            .map(|(item, description)| {
-                CompletionItem::new_simple(item, description.unwrap_or_default())
-            })
-            .collect();
+        let completion_items = self.get_completion_items(&uri, position);
 
         Ok(Some(CompletionResponse::List(CompletionList {
             is_incomplete: false,

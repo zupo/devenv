@@ -426,8 +426,6 @@ impl Devenv {
             client,
             document_map: DashMap::new(),
             completion_json: completion_json.clone(),
-            current_scope: Default::default(),
-            last_cursor_position: DashMap::new(),
         });
 
         Server::new(stdin, stdout, socket).serve(service).await;
